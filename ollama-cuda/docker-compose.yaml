@@ -6,7 +6,13 @@ services:
     restart: always
     volumes:
       - ollama-data:/root/.ollama
-    entrypoint: /bin/sh -c "ollama serve & sleep 10 && ollama pull llama3.1 && tail -f /dev/null"
+    entrypoint: >
+      /bin/sh -c "
+      ollama serve & 
+      until ollama list > /dev/null 2>&1; do sleep 1; done;
+      ollama list | grep -q 'llama3.1' || ollama pull llama3.1;
+      tail -f /dev/null
+      "
     networks:
       - ai-network
     deploy:
@@ -48,7 +54,10 @@ services:
       - 'ENABLE_RAG_WEB_SEARCH=True'
       - 'RAG_WEB_SEARCH_ENGINE=searxng'
       - 'RAG_WEB_SEARCH_RESULT_COUNT=3'
-      - 'SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>' # <-- 這裡修正了
+      - 'SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>' # 修正為 <query>
+      - 'ENABLE_IMAGE_GENERATION=True'
+      - 'IMAGE_GENERATION_ENGINE=comfyui'
+      - 'COMFYUI_BASE_URL=http://comfyui:8188'
     deploy:
       resources:
         reservations:
@@ -59,22 +68,55 @@ services:
     depends_on:
       - ollama
       - searxng
+      - comfyui
     networks:
       - ai-network
-      
-  # 4. 自動更新工具
-  watchtower:
-    image: containrrr/watchtower
-    container_name: watchtower
+
+  # 5. AI 繪圖引擎 (修正縮排與路徑)
+  comfyui:
+    image: yanwk/comfyui-boot:cu130-slim-v2
+    container_name: comfyui-cu130
+    pull_policy: always
     restart: always
+    # 這裡加入你剛才問的關鍵參數，確保 Windows 能連線且發揮 3060 效能
+    environment:
+      - CLI_ARGS=--listen 0.0.0.0 --port 8188 --highvram --use-pytorch-cross-attention
+      - TZ=Asia/Taipei
+    ports:
+      - "8188:8188"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: --cleanup --interval 86400
+      # 快取與設定 (Cache & Config)
+      - ./storage-cache/dot-cache:/root/.cache
+      - ./storage-cache/dot-config:/root/.config
+      
+      # 插件與環境 (Nodes & Local)
+      - ./storage-nodes/dot-local:/root/.local
+      - ./storage-nodes/custom_nodes:/root/ComfyUI/custom_nodes
+      
+      # 模型 (Models & Hubs)
+      - ./storage-models/models:/root/ComfyUI/models
+      - ./storage-models/hf-hub:/root/.cache/huggingface/hub
+      - ./storage-models/torch-hub:/root/.cache/torch/hub
+      
+      # 使用者資料 (User Data)
+      - ./storage-user/input:/root/ComfyUI/input
+      - ./storage-user/output:/root/ComfyUI/output
+      - ./storage-user/user-profile:/root/ComfyUI/user
+      - ./storage-user/user-scripts:/root/user-scripts
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     networks:
-      - ai-network # <-- 建議加入
+      - ai-network     
 
 networks:
   ai-network:
+       name: ai-network
 
 volumes:
   ollama-data:
